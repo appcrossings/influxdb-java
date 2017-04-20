@@ -129,7 +129,7 @@ public class BatchPoints {
       BatchPoints batchPoints = new BatchPoints();
       batchPoints.setDatabase(this.database);
       for (Point point : this.points) {
-        point.getTags().putAll(this.tags);
+        point.getTagz().putAll(this.tags);
       }
       batchPoints.setPoints(this.points);
       batchPoints.setRetentionPolicy(this.retentionPolicy);
@@ -194,7 +194,7 @@ public class BatchPoints {
    * @return this Instance to be able to daisy chain calls.
    */
   public BatchPoints point(final Point point) {
-    point.getTags().putAll(this.tags);
+    point.getTagz().putAll(this.tags);
     this.points.add(point);
     return this;
   }

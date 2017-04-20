@@ -228,16 +228,16 @@ public class PointTest {
 	@Test
 	public void testEmptyValuesAreIgnored() {
 		Point point = Point.measurement("dontcare").tag("key","").addField("dontcare", true).build();
-		assertThat(point.getTags().size()).isEqualTo(0);
+		assertThat(point.getTagz().size()).isEqualTo(0);
 
 		point = Point.measurement("dontcare").tag("","value").addField("dontcare", true).build();
-		assertThat(point.getTags().size()).isEqualTo(0);
+		assertThat(point.getTagz().size()).isEqualTo(0);
 
 		point = Point.measurement("dontcare").tag(ImmutableMap.of("key","")).addField("dontcare", true).build();
-		assertThat(point.getTags().size()).isEqualTo(0);
+		assertThat(point.getTagz().size()).isEqualTo(0);
 
 		point = Point.measurement("dontcare").tag(ImmutableMap.of("","value")).addField("dontcare", true).build();
-		assertThat(point.getTags().size()).isEqualTo(0);
+		assertThat(point.getTagz().size()).isEqualTo(0);
 	}
 
 	/**

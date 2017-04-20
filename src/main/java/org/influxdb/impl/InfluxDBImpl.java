@@ -8,31 +8,6 @@ import com.google.common.base.Strings;
 import com.google.common.collect.Lists;
 import com.squareup.moshi.JsonAdapter;
 import com.squareup.moshi.Moshi;
-
-import org.influxdb.InfluxDB;
-import org.influxdb.dto.BatchPoints;
-import org.influxdb.dto.Point;
-import org.influxdb.dto.Pong;
-import org.influxdb.dto.Query;
-import org.influxdb.dto.QueryResult;
-import org.influxdb.impl.BatchProcessor.HttpBatchEntry;
-import org.influxdb.impl.BatchProcessor.UdpBatchEntry;
-
-import okhttp3.Headers;
-import okhttp3.HttpUrl;
-import okhttp3.MediaType;
-import okhttp3.OkHttpClient;
-import okhttp3.RequestBody;
-import okhttp3.ResponseBody;
-import okhttp3.logging.HttpLoggingInterceptor;
-import okhttp3.logging.HttpLoggingInterceptor.Level;
-import okio.BufferedSource;
-import retrofit2.Call;
-import retrofit2.Callback;
-import retrofit2.Response;
-import retrofit2.Retrofit;
-import retrofit2.converter.moshi.MoshiConverterFactory;
-
 import java.io.EOFException;
 import java.io.IOException;
 import java.net.DatagramPacket;
@@ -48,6 +23,29 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
+import okhttp3.Headers;
+import okhttp3.HttpUrl;
+import okhttp3.MediaType;
+import okhttp3.OkHttpClient;
+import okhttp3.RequestBody;
+import okhttp3.ResponseBody;
+import okhttp3.logging.HttpLoggingInterceptor;
+import okhttp3.logging.HttpLoggingInterceptor.Level;
+import okio.BufferedSource;
+import org.influxdb.InfluxDB;
+import org.influxdb.InfluxDBBatchListener;
+import org.influxdb.dto.BatchPoints;
+import org.influxdb.dto.Point;
+import org.influxdb.dto.Pong;
+import org.influxdb.dto.Query;
+import org.influxdb.dto.QueryResult;
+import org.influxdb.impl.BatchProcessor.HttpBatchEntry;
+import org.influxdb.impl.BatchProcessor.UdpBatchEntry;
+import retrofit2.Call;
+import retrofit2.Callback;
+import retrofit2.Response;
+import retrofit2.Retrofit;
+import retrofit2.converter.moshi.MoshiConverterFactory;
 
 /**
  * Implementation of a InluxDB API.
@@ -55,6 +53,7 @@ import java.util.function.Consumer;
  * @author stefan.majer [at] gmail.com
  */
 public class InfluxDBImpl implements InfluxDB {
+
   static final okhttp3.MediaType MEDIA_TYPE_STRING = MediaType.parse("text/plain");
 
   private static final String SHOW_DATABASE_COMMAND_ENCODED = Query.encode("SHOW DATABASES");
@@ -64,14 +63,14 @@ public class InfluxDBImpl implements InfluxDB {
   private final String password;
   private final Retrofit retrofit;
   private final InfluxDBService influxDBService;
-  private BatchProcessor batchProcessor;
   private final AtomicBoolean batchEnabled = new AtomicBoolean(false);
   private final AtomicLong writeCount = new AtomicLong();
   private final AtomicLong unBatchedCount = new AtomicLong();
   private final AtomicLong batchedCount = new AtomicLong();
-  private volatile DatagramSocket datagramSocket;
   private final HttpLoggingInterceptor loggingInterceptor;
   private final GzipRequestInterceptor gzipRequestInterceptor;
+  private BatchProcessor batchProcessor;
+  private volatile DatagramSocket datagramSocket;
   private LogLevel logLevel = LogLevel.NONE;
   private JsonAdapter<QueryResult> adapter;
 
@@ -95,30 +94,30 @@ public class InfluxDBImpl implements InfluxDB {
   }
 
   private InetAddress parseHostAddress(final String url) {
-      try {
-          return InetAddress.getByName(HttpUrl.parse(url).host());
-      } catch (UnknownHostException e) {
-          throw new RuntimeException(e);
-      }
+    try {
+      return InetAddress.getByName(HttpUrl.parse(url).host());
+    } catch (UnknownHostException e) {
+      throw new RuntimeException(e);
+    }
   }
 
   @Override
   public InfluxDB setLogLevel(final LogLevel logLevel) {
     switch (logLevel) {
-    case NONE:
-      this.loggingInterceptor.setLevel(Level.NONE);
-      break;
-    case BASIC:
-      this.loggingInterceptor.setLevel(Level.BASIC);
-      break;
-    case HEADERS:
-      this.loggingInterceptor.setLevel(Level.HEADERS);
-      break;
-    case FULL:
-      this.loggingInterceptor.setLevel(Level.BODY);
-      break;
-    default:
-      break;
+      case NONE:
+        this.loggingInterceptor.setLevel(Level.NONE);
+        break;
+      case BASIC:
+        this.loggingInterceptor.setLevel(Level.BASIC);
+        break;
+      case HEADERS:
+        this.loggingInterceptor.setLevel(Level.HEADERS);
+        break;
+      case FULL:
+        this.loggingInterceptor.setLevel(Level.BODY);
+        break;
+      default:
+        break;
     }
     this.logLevel = logLevel;
     return this;
@@ -152,14 +151,32 @@ public class InfluxDBImpl implements InfluxDB {
 
   @Override
   public InfluxDB enableBatch(final int actions, final int flushDuration,
-                              final TimeUnit flushDurationTimeUnit) {
-    enableBatch(actions, flushDuration, flushDurationTimeUnit, Executors.defaultThreadFactory());
+      final TimeUnit flushDurationTimeUnit) {
+    enableBatch(actions, flushDuration, flushDurationTimeUnit, Executors.defaultThreadFactory(),
+        new BaseInfluxDBListener());
     return this;
   }
 
   @Override
   public InfluxDB enableBatch(final int actions, final int flushDuration,
-                              final TimeUnit flushDurationTimeUnit, final ThreadFactory threadFactory) {
+      final TimeUnit flushDurationTimeUnit, final InfluxDBBatchListener listener) {
+    enableBatch(actions, flushDuration, flushDurationTimeUnit, Executors.defaultThreadFactory(), listener);
+    return this;
+  }
+
+  @Override
+  public InfluxDB enableBatch(final int actions, final int flushDuration,
+      final TimeUnit flushDurationTimeUnit, final ThreadFactory threadFactory) {
+    if (this.batchEnabled.get()) {
+      throw new IllegalStateException("BatchProcessing is already enabled.");
+    }
+    enableBatch(actions, flushDuration, flushDurationTimeUnit, threadFactory, new BaseInfluxDBListener());
+    return this;
+  }
+
+  @Override
+  public InfluxDB enableBatch(final int actions, final int flushDuration,
+      final TimeUnit flushDurationTimeUnit, final ThreadFactory threadFactory, final InfluxDBBatchListener listener) {
     if (this.batchEnabled.get()) {
       throw new IllegalStateException("BatchProcessing is already enabled.");
     }
@@ -168,10 +185,12 @@ public class InfluxDBImpl implements InfluxDB {
         .actions(actions)
         .interval(flushDuration, flushDurationTimeUnit)
         .threadFactory(threadFactory)
+        .listener(listener)
         .build();
     this.batchEnabled.set(true);
     return this;
   }
+
 
   @Override
   public void disableBatch() {
@@ -181,8 +200,8 @@ public class InfluxDBImpl implements InfluxDB {
       if (this.logLevel != LogLevel.NONE) {
         System.out.println(
             "total writes:" + this.writeCount.get()
-            + " unbatched:" + this.unBatchedCount.get()
-            + " batchPoints:" + this.batchedCount);
+                + " unbatched:" + this.unBatchedCount.get()
+                + " batchPoints:" + this.batchedCount);
       }
     }
   }
@@ -227,7 +246,7 @@ public class InfluxDBImpl implements InfluxDB {
       this.batchProcessor.put(batchEntry);
     } else {
       BatchPoints batchPoints = BatchPoints.database(database)
-                                           .retentionPolicy(retentionPolicy).build();
+          .retentionPolicy(retentionPolicy).build();
       batchPoints.point(point);
       this.write(batchPoints);
       this.unBatchedCount.incrementAndGet();
@@ -292,25 +311,25 @@ public class InfluxDBImpl implements InfluxDB {
     initialDatagramSocket();
     byte[] bytes = records.getBytes(StandardCharsets.UTF_8);
     try {
-        datagramSocket.send(new DatagramPacket(bytes, bytes.length, hostAddress, udpPort));
+      datagramSocket.send(new DatagramPacket(bytes, bytes.length, hostAddress, udpPort));
     } catch (IOException e) {
-        throw new RuntimeException(e);
+      throw new RuntimeException(e);
     }
   }
 
   private void initialDatagramSocket() {
     if (datagramSocket == null) {
-        synchronized (InfluxDBImpl.class) {
-            if (datagramSocket == null) {
-                try {
-                    datagramSocket = new DatagramSocket();
-                } catch (SocketException e) {
-                    throw new RuntimeException(e);
-                }
-            }
+      synchronized (InfluxDBImpl.class) {
+        if (datagramSocket == null) {
+          try {
+            datagramSocket = new DatagramSocket();
+          } catch (SocketException e) {
+            throw new RuntimeException(e);
+          }
         }
+      }
     }
-}
+  }
 
   /**
    * {@inheritDoc}
@@ -329,10 +348,10 @@ public class InfluxDBImpl implements InfluxDB {
     Call<QueryResult> call;
     if (query.requiresPost()) {
       call = this.influxDBService.postQuery(this.username,
-                                            this.password, query.getDatabase(), query.getCommandWithUrlEncoded());
+          this.password, query.getDatabase(), query.getCommandWithUrlEncoded());
     } else {
       call = this.influxDBService.query(this.username,
-                                        this.password, query.getDatabase(), query.getCommandWithUrlEncoded());
+          this.password, query.getDatabase(), query.getCommandWithUrlEncoded());
     }
     return execute(call);
   }
@@ -341,45 +360,45 @@ public class InfluxDBImpl implements InfluxDB {
    * {@inheritDoc}
    */
   @Override
-    public void query(final Query query, final int chunkSize, final Consumer<QueryResult> consumer) {
+  public void query(final Query query, final int chunkSize, final Consumer<QueryResult> consumer) {
 
-        if (version().startsWith("0.") || version().startsWith("1.0")) {
-            throw new RuntimeException("chunking not supported");
+    if (version().startsWith("0.") || version().startsWith("1.0")) {
+      throw new RuntimeException("chunking not supported");
+    }
+
+    Call<ResponseBody> call = this.influxDBService.query(this.username, this.password,
+        query.getDatabase(), query.getCommandWithUrlEncoded(), chunkSize);
+
+    call.enqueue(new Callback<ResponseBody>() {
+      @Override
+      public void onResponse(final Call<ResponseBody> call, final Response<ResponseBody> response) {
+        try {
+          if (response.isSuccessful()) {
+            BufferedSource source = response.body().source();
+            while (true) {
+              QueryResult result = InfluxDBImpl.this.adapter.fromJson(source);
+              if (result != null) {
+                consumer.accept(result);
+              }
+            }
+          }
+          try (ResponseBody errorBody = response.errorBody()) {
+            throw new RuntimeException(errorBody.string());
+          }
+        } catch (EOFException e) {
+          QueryResult queryResult = new QueryResult();
+          queryResult.setError("DONE");
+          consumer.accept(queryResult);
+        } catch (IOException e) {
+          throw new RuntimeException(e);
         }
+      }
 
-        Call<ResponseBody> call = this.influxDBService.query(this.username, this.password,
-                query.getDatabase(), query.getCommandWithUrlEncoded(), chunkSize);
-
-        call.enqueue(new Callback<ResponseBody>() {
-            @Override
-            public void onResponse(final Call<ResponseBody> call, final Response<ResponseBody> response) {
-                try {
-                    if (response.isSuccessful()) {
-                        BufferedSource source = response.body().source();
-                        while (true) {
-                            QueryResult result = InfluxDBImpl.this.adapter.fromJson(source);
-                            if (result != null) {
-                                consumer.accept(result);
-                            }
-                        }
-                    }
-                    try (ResponseBody errorBody = response.errorBody()) {
-                        throw new RuntimeException(errorBody.string());
-                    }
-                } catch (EOFException e) {
-                    QueryResult queryResult = new QueryResult();
-                    queryResult.setError("DONE");
-                    consumer.accept(queryResult);
-                } catch (IOException e) {
-                    throw new RuntimeException(e);
-                }
-            }
-
-            @Override
-            public void onFailure(final Call<ResponseBody> call, final Throwable t) {
-                throw new RuntimeException(t);
-            }
-        });
+      @Override
+      public void onFailure(final Call<ResponseBody> call, final Throwable t) {
+        throw new RuntimeException(t);
+      }
+    });
   }
 
   /**
@@ -410,7 +429,7 @@ public class InfluxDBImpl implements InfluxDB {
   @Override
   public void deleteDatabase(final String name) {
     execute(this.influxDBService.postQuery(this.username, this.password,
-                                           Query.encode("DROP DATABASE \"" + name + "\"")));
+        Query.encode("DROP DATABASE \"" + name + "\"")));
   }
 
   /**
@@ -419,7 +438,7 @@ public class InfluxDBImpl implements InfluxDB {
   @Override
   public List<String> describeDatabases() {
     QueryResult result = execute(this.influxDBService.query(this.username,
-                                                            this.password, SHOW_DATABASE_COMMAND_ENCODED));
+        this.password, SHOW_DATABASE_COMMAND_ENCODED));
     // {"results":[{"series":[{"name":"databases","columns":["name"],"values":[["mydb"]]}]}]}
     // Series [name=databases, columns=[name], values=[[mydb], [unittest_1433605300968]]]
     List<List<Object>> databaseNames = result.getResults().get(0).getSeries().get(0).getValues();
@@ -477,11 +496,11 @@ public class InfluxDBImpl implements InfluxDB {
   @Override
   public void close() {
     try {
-        this.disableBatch();
+      this.disableBatch();
     } finally {
-        if (datagramSocket != null && !datagramSocket.isClosed()) {
-            datagramSocket.close();
-        }
+      if (datagramSocket != null && !datagramSocket.isClosed()) {
+        datagramSocket.close();
+      }
     }
   }
 

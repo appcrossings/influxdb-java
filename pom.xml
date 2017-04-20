@@ -9,7 +9,7 @@
 	</parent>
 
 	<modelVersion>4.0.0</modelVersion>
-	<groupId>org.influxdb</groupId>
+	<groupId>com.appcrossings.influxdb</groupId>
 	<artifactId>influxdb-java</artifactId>
 	<packaging>jar</packaging>
 	<version>2.5-SNAPSHOT</version>
